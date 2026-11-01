@@ -24,7 +24,7 @@
   "name": "iceland-immersive",
   "private": "true",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --turbopack -p 3001",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
