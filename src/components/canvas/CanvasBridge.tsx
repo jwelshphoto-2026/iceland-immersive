@@ -15,7 +15,7 @@
 import React, { useEffect } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import type { Material, Mesh, Object3D, Texture } from "three";
-import { canvasTunnel } from "@/lib/tunnel";
+import { canvasTunnel } from "@/components/canvas/tunnel";
 
 const DPR_RANGE: [number, number] = [1, 1.5];
 
@@ -85,11 +85,12 @@ export default function CanvasBridge() {
       aria-hidden="true"
       style={{
         position: "fixed",
-        inset: 0,
-        zIndex: 0,
-        pointerEvents: "none",
+        top: 0,
+        left: 0,
         width: "100vw",
         height: "100vh",
+        pointerEvents: "none",
+        zIndex: -1,
       }}
     >
       <Canvas
