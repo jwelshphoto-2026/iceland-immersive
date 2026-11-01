@@ -1,23 +1,26 @@
 "use client";
 // src/components/canvas/shaders/GeothermalMist.tsx
 //
-// Station 10 - domain-warped FBM solfatara steam, migrated from the legacy
-// standalone GeothermalSteamCanvas. It renders as a full-viewport alpha quad
-// inside the shared CanvasBridge (injected via canvasTunnel.In) - there is no
-// private WebGLRenderer, no private RAF loop and no React state for density.
+// Station 10 - Plate 10 rendered inside the shared CanvasBridge with a
+// domain-warped FBM solfatara steam blended directly over the plate texture.
+// Injected via canvasTunnel.In - there is no private WebGLRenderer, no private
+// RAF loop and no React state for density.
 //
 // Protocol:
 // - Uniforms (uTime, uDensity) are mutated ONLY inside useFrame, in place.
 //   No objects are allocated per frame.
+// - The 3:1 hero plane is sized from the viewport inside useFrame by scaling a
+//   unit plane (mesh.scale), so resizing never rebuilds geometry.
 // - Density is fed through a shared mutable ref (written by ScrollTrigger,
 //   outside React) so scrolling never causes a re-render.
 // - The canvas is frameloop="demand": while `state.active` is true this
-//   component calls invalidate() each frame to keep the mist drifting; when
-//   inactive it stops requesting frames.
-// - Geometry + material are disposed in a useEffect cleanup.
-import { useEffect, useMemo, type MutableRefObject } from "react";
+//   component calls invalidate() each frame to keep the mist drifting.
+// - Geometry, material AND the plate texture are disposed in a useEffect
+//   cleanup.
+import { Suspense, useEffect, useMemo, type MutableRefObject } from "react";
 import { useFrame } from "@react-three/fiber";
-import { PlaneGeometry, ShaderMaterial, Mesh, type IUniform } from "three";
+import { useTexture } from "@react-three/drei";
+import { PlaneGeometry, ShaderMaterial, Mesh, type IUniform, type Texture } from "three";
 
 export interface MistState {
   /** Target density, 0.25 (ambient draft) -> 0.78 (choking vent). */
@@ -26,15 +29,21 @@ export interface MistState {
   active: boolean;
 }
 
+export const PLATE_10_SRC = "/reference-archive/Plate_10.webp";
+
+/** RLM hero plate aspect ratio (width : height). */
+const HERO_ASPECT = 3;
+
 const VERTEX_SHADER = /* glsl */ `
   varying vec2 vUv;
   void main() {
     vUv = uv;
-    gl_Position = vec4(position.xy, 0.0, 1.0);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `;
 
 const FRAGMENT_SHADER = /* glsl */ `
+  uniform sampler2D uTexture;
   uniform float uTime;
   uniform float uDensity;
   varying vec2 vUv;
@@ -72,6 +81,7 @@ const FRAGMENT_SHADER = /* glsl */ `
 
   void main() {
     vec2 uv = vUv;
+    vec4 baseColor = texture2D(uTexture, uv);
 
     // Horizontal fissure drift + slow upward thermal plume
     vec2 drift = vec2(uTime * 0.07, uTime * 0.04);
@@ -87,31 +97,35 @@ const FRAGMENT_SHADER = /* glsl */ `
     vec3 steamColor = mix(vec3(0.92, 0.90, 0.86), vec3(0.96, 0.88, 0.68), clamp(f * 0.35, 0.0, 1.0));
 
     float steamAlpha = clamp(pow(f, 1.6) * 1.85 * groundMask * uDensity, 0.0, 0.78);
-    gl_FragColor = vec4(steamColor, steamAlpha);
+
+    // Soft optical blend over the raw 35mm scan
+    gl_FragColor = vec4(mix(baseColor.rgb, steamColor, steamAlpha), 1.0);
   }
 `;
 
-export default function GeothermalMist({ state }: { state: MutableRefObject<MistState> }) {
+function MistPlate({ state }: { state: MutableRefObject<MistState> }) {
+  // Suspends until the plate is decoded (see Suspense boundary below).
+  const texture: Texture = useTexture(PLATE_10_SRC);
+
   const { geometry, material, mesh } = useMemo(() => {
-    const uniforms: Record<string, IUniform<number>> = {
+    const uniforms: Record<string, IUniform> = {
+      uTexture: { value: texture },
       uTime: { value: 0 },
       uDensity: { value: 0.25 },
     };
-    const geometry = new PlaneGeometry(2, 2);
+    // Unit plane; scaled to the 3:1 hero rectangle in useFrame.
+    const geometry = new PlaneGeometry(1, 1);
     const material = new ShaderMaterial({
       vertexShader: VERTEX_SHADER,
       fragmentShader: FRAGMENT_SHADER,
       uniforms,
-      transparent: true,
       depthWrite: false,
       depthTest: false,
       toneMapped: false,
     });
     const mesh = new Mesh(geometry, material);
-    // Clip-space quad: it must never be frustum-culled.
-    mesh.frustumCulled = false;
     return { geometry, material, mesh };
-  }, []);
+  }, [texture]);
 
   useFrame((frame) => {
     const uniforms = material.uniforms;
@@ -121,6 +135,13 @@ export default function GeothermalMist({ state }: { state: MutableRefObject<Mist
     uniforms.uTime.value = frame.clock.elapsedTime;
     uniforms.uDensity.value = state.current.density;
     /* eslint-enable react-hooks/immutability */
+
+    // Strict 3:1 hero plate, "contain"-fitted to the viewport (world units at
+    // the z=0 plane). Width-limited on landscape, height-limited on narrow.
+    const { width, height } = frame.viewport;
+    const planeWidth = Math.min(width, height * HERO_ASPECT);
+    mesh.scale.set(planeWidth, planeWidth / HERO_ASPECT, 1);
+
     // frameloop="demand": keep drifting only while Station 10 is on screen.
     if (state.current.active) frame.invalidate();
   });
@@ -129,14 +150,21 @@ export default function GeothermalMist({ state }: { state: MutableRefObject<Mist
     return () => {
       geometry.dispose();
       material.dispose();
-      // No textures are held by the mist, but sweep uniforms defensively so a
-      // future sampler uniform can never leak VRAM.
-      for (const u of Object.values(material.uniforms)) {
-        const v = u.value as { isTexture?: boolean; dispose?: () => void } | null;
-        if (v && v.isTexture && v.dispose) v.dispose();
-      }
+      texture.dispose();
+      // Drop drei's loader cache so a remount reloads instead of reusing a
+      // disposed texture.
+      useTexture.clear(PLATE_10_SRC);
     };
-  }, [geometry, material]);
+  }, [geometry, material, texture]);
 
   return <primitive object={mesh} />;
+}
+
+export default function GeothermalMist({ state }: { state: MutableRefObject<MistState> }) {
+  // Suspense keeps the texture load from blanking the rest of the shared canvas.
+  return (
+    <Suspense fallback={null}>
+      <MistPlate state={state} />
+    </Suspense>
+  );
 }
