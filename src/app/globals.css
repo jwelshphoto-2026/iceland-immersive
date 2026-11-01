@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+:root {
+  --rlm-canvas: #0B0B0C;
+  --rlm-scrim: #121316;
+  --rlm-fg: #FAF9F6;
+}
+
+html,
+body {
+  background: var(--rlm-canvas);
+  color: var(--rlm-fg);
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* Lenis */
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+
